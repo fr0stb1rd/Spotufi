@@ -1,0 +1,107 @@
+name: Release APKs
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-upload-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v7
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-disabled: true
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > app/release.jks
+
+      - name: Verify keystore credentials
+        uses: Appegy/verify-keystore-action@v1.1.0
+        with:
+          keystore-path: app/release.jks
+          keystore-password: ${{ secrets.KEYSTORE_PASSWORD }}
+          alias-name: ${{ secrets.KEY_ALIAS }}
+          alias-password: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Build release APK
+        run: |
+          TAG_NAME="${{ github.ref_name }}"
+          VERSION_NAME="${TAG_NAME#v}"
+          VERSION_CODE=${{ github.run_number }}
+          ./gradlew :app:assembleRelease --no-daemon \
+            -PversionName="$VERSION_NAME" \
+            -PversionCode="$VERSION_CODE" \
+            -PreleaseStoreFile=release.jks \
+            -PreleaseStorePassword="${{ secrets.KEYSTORE_PASSWORD }}" \
+            -PreleaseKeyAlias="${{ secrets.KEY_ALIAS }}" \
+            -PreleaseKeyPassword="${{ secrets.KEY_PASSWORD }}"
+
+      - name: Clean up keystore
+        if: always()
+        run: rm -f app/release.jks
+
+      - name: Generate checksums and GPG signatures
+        run: |
+          cd app/build/outputs/apk/release
+          for apk in *.apk; do
+            sha256sum "$apk" | cut -d " " -f 1 > "$apk.sha256"
+            gpg --batch --yes --detach-sig "$apk.sha256"
+          done
+          echo "Generated files:"
+          ls -lh
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ github.ref_name }}"
+          cd app/build/outputs/apk/release
+          gh release create "$TAG_NAME" \
+            --repo="${GITHUB_REPOSITORY}" \
+            --title="$TAG_NAME" \
+            --generate-notes \
+            *.apk *.sha256 *.sha256.sig
+
+      - name: Update latest.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git fetch origin main
+          git checkout main
+          echo "$VERSION" > latest.txt
+          git add latest.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "update latest.txt to v${VERSION}"
+            git push
+          fi

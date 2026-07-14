@@ -1,0 +1,119 @@
+package io.github.sekademi.spotufi.data.api
+
+import android.content.Context
+import android.util.Log
+import com.metrolist.spotify.Spotify
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Fire-and-forget mirroring of local library actions to the user's REAL Spotify
+ * account (web-player token): liking a song, saving an album or following an
+ * artist here shows up in Spotify itself. Failures are logged, never surfaced —
+ * the local action already succeeded.
+ */
+object SpotifySync {
+
+    private const val TAG = "SpotifySync"
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun setTrackSaved(context: Context, trackId: String, saved: Boolean) =
+        setSaved(context, trackId, "spotify:track:$trackId", saved)
+
+    fun setAlbumSaved(context: Context, albumId: String, saved: Boolean) =
+        setSaved(context, albumId, "spotify:album:$albumId", saved)
+
+    fun setArtistFollowed(context: Context, artistId: String, followed: Boolean) =
+        setSaved(context, artistId, "spotify:artist:$artistId", followed)
+
+    private fun setSaved(context: Context, id: String, uri: String, saved: Boolean) {
+        if (id.isBlank()) return
+        val app = context.applicationContext
+        scope.launch {
+            if (!SpotifyTokenProvider.ensureToken(app)) {
+                Log.w(TAG, "no token — skipped syncing $uri saved=$saved")
+                return@launch
+            }
+            val result =
+                if (saved) Spotify.addToLibrary(listOf(uri))
+                else Spotify.removeFromLibrary(listOf(uri))
+            result.fold(
+                onSuccess = { Log.d(TAG, "synced $uri saved=$saved") },
+                onFailure = { Log.w(TAG, "failed syncing $uri saved=$saved", it) },
+            )
+        }
+    }
+
+    /** Adds a track to one of the user's playlists on Spotify itself. */
+    fun addTrackToPlaylist(context: Context, playlistId: String, trackId: String, onDone: (Boolean) -> Unit = {}) {
+        if (playlistId.isBlank() || trackId.isBlank()) { onDone(false); return }
+        val app = context.applicationContext
+        scope.launch {
+            val ok = SpotifyTokenProvider.ensureToken(app) &&
+                Spotify.addTracksToPlaylist(playlistId, listOf("spotify:track:$trackId")).isSuccess
+            if (ok) membershipCache[playlistId]?.add(trackId)
+            if (!ok) Log.w(TAG, "failed adding track $trackId to playlist $playlistId")
+            onDone(ok)
+        }
+    }
+
+    /** Removes every occurrence of a track from one of the user's playlists on
+     *  Spotify itself (resolves the playlist-scoped item uids first). */
+    fun removeTrackFromPlaylist(context: Context, playlistId: String, trackId: String, onDone: (Boolean) -> Unit = {}) {
+        if (playlistId.isBlank() || trackId.isBlank()) { onDone(false); return }
+        val app = context.applicationContext
+        scope.launch {
+            if (!SpotifyTokenProvider.ensureToken(app)) { onDone(false); return@launch }
+            val uri = "spotify:track:$trackId"
+            val refs = Spotify.playlistTracks(playlistId, limit = 100).getOrNull()
+                ?.items.orEmpty()
+                .filter { it.track?.id == trackId || it.track?.uri == uri }
+                .mapNotNull { pt -> pt.uid?.let { Spotify.PlaylistItemRef(uri = uri, uid = it) } }
+            val ok = refs.isNotEmpty() &&
+                Spotify.removeTracksFromPlaylist(playlistId, refs).isSuccess
+            if (ok) membershipCache[playlistId]?.remove(trackId)
+            if (!ok) Log.w(TAG, "failed removing track $trackId from playlist $playlistId")
+            onDone(ok)
+        }
+    }
+
+    /** Creates a new playlist on Spotify and adds the track to it. */
+    fun createPlaylistWithTrack(context: Context, name: String, trackId: String, onDone: (Boolean) -> Unit = {}) {
+        if (name.isBlank()) { onDone(false); return }
+        val app = context.applicationContext
+        scope.launch {
+            if (!SpotifyTokenProvider.ensureToken(app)) { onDone(false); return@launch }
+            val playlist = Spotify.createPlaylist(name).getOrNull()
+            if (playlist == null || playlist.id.isBlank()) {
+                Log.w(TAG, "createPlaylist '$name' failed"); onDone(false); return@launch
+            }
+            val ok = trackId.isBlank() ||
+                Spotify.addTracksToPlaylist(playlist.id, listOf("spotify:track:$trackId")).isSuccess
+            if (ok && trackId.isNotBlank()) {
+                membershipCache[playlist.id] = mutableSetOf(trackId)
+            }
+            onDone(ok)
+        }
+    }
+
+    // ── Playlist membership (which playlists contain a track) ──
+    // Cached per playlist for the app session so the "Saved in" sheet can show
+    // check marks without re-fetching on every open.
+    private val membershipCache = ConcurrentHashMap<String, MutableSet<String>>()
+
+    /** Track ids contained in [playlistId] (first call fetches, then cached). */
+    suspend fun playlistTrackIds(context: Context, playlistId: String): Set<String> {
+        membershipCache[playlistId]?.let { return it }
+        if (!SpotifyTokenProvider.ensureToken(context.applicationContext)) return emptySet()
+        val ids = Spotify.playlistTracks(playlistId, limit = 100).getOrNull()
+            ?.items.orEmpty()
+            .mapNotNull { it.track?.id?.ifBlank { null } }
+            .toMutableSet()
+        val set = ConcurrentHashMap.newKeySet<String>().apply { addAll(ids) }
+        membershipCache[playlistId] = set
+        return set
+    }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "spotufi",
+  "url": "https://github.com/fr0stb1rd/spotufi",
+  "author": "Spotufi",
+  "name": "spotufi",
+  "installedVersion": null,
+  "latestVersion": null,
+  "apkUrls": [],
+  "preferredApkIndex": 0,
+  "additionalSettings": "{\"includePrereleases\":false,\"fallbackToOlderReleases\":true,\"filterReleaseTitlesByRegEx\":\"\",\"filterReleaseNotesByRegEx\":\"\",\"verifyLatestTag\":false,\"dontSortReleasesList\":false,\"useLatestAssetDateAsReleaseDate\":false,\"trackOnly\":false,\"versionDetection\":\"standardVersionDetection\",\"releaseTitleAsVersion\":false,\"useVersionCodeAsOSVersion\":false,\"apkFilterRegEx\":\"spotufi-v.*\\\\.apk\",\"invertAPKFilter\":false,\"autoApkFilterByArch\":true,\"appName\":\"spotui\",\"shizukuPretendToBeGooglePlay\":false,\"allowInsecure\":false,\"exemptFromBackgroundUpdates\":false,\"skipUpdateNotifications\":false,\"about\":\"\"}",
+  "lastUpdateCheck": null,
+  "pinned": false,
+  "categories": [],
+  "releaseDate": null,
+  "changeLog": null,
+  "overrideSource": null
+}
